@@ -16,10 +16,6 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: 160277814735.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
-          imagePullPolicy: Always
+          image: 543254694081.dkr.ecr.us-east-1.amazonaws.com/frontend:latest
           ports:
             - containerPort: 3000
-          env:
-            - name: REACT_APP_MOVIE_API_URL
-              value: "http://backend-service:5000"
