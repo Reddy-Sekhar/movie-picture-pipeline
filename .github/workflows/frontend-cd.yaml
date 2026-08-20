@@ -101,12 +101,12 @@ jobs:
       - name: Tag Docker image
         run: |
           docker tag frontend:${{ github.sha }} \
-            160277814735.dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
+            .dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
 
       - name: Push Docker image
         run: |
           docker push \
-            160277814735.dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
+            543254694081.dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
 
       - name: Update kubeconfig
         run: |
@@ -117,7 +117,7 @@ jobs:
       - name: Update frontend deployment image
         run: |
           kubectl set image deployment/frontend \
-            frontend=160277814735.dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
+            frontend=543254694081.dkr.ecr.us-east-1.amazonaws.com/frontend:${{ github.sha }}
 
       - name: Verify frontend rollout
         run: |
