@@ -1,24 +1,16 @@
 name: Backend Continuous Deployment
 
 on:
-  workflow_dispatch:
-
   push:
     branches:
       - main
     paths:
       - 'starter/backend/**'
-      - '.github/workflows/backend-cd.yaml'
-
-env:
-  AWS_REGION: us-east-1
-  EKS_CLUSTER_NAME: cluster1
-  ECR_REPOSITORY: backend
-  IMAGE_TAG: latest
+  workflow_dispatch:
 
 jobs:
   lint:
-    name: Lint
+    name: Lint Backend
     runs-on: ubuntu-latest
 
     defaults:
@@ -26,120 +18,124 @@ jobs:
         working-directory: starter/backend
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
+
+      - name: Install Pipenv
+        run: pip install pipenv
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pipenv
-          pipenv install --dev --system
+        run: pipenv install --dev
 
-      - name: Run flake8 linting
-        run: flake8 .
+      - name: Run lint
+        run: pipenv run lint
 
   test:
-    name: Test
+    name: Test Backend
     runs-on: ubuntu-latest
-    needs: lint
 
     defaults:
       run:
         working-directory: starter/backend
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.10'
+
+      - name: Install Pipenv
+        run: pip install pipenv
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pipenv pytest
-          pipenv install --dev --system
+        run: pipenv install --dev
 
       - name: Run tests
-        run: pytest
+        run: pipenv run test
 
-  build-and-deploy:
-    name: Build and Deploy
+  build:
+    name: Build Backend
     runs-on: ubuntu-latest
-    needs: test
+    needs:
+      - lint
+      - test
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      # Configure AWS credentials securely from GitHub Secrets
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      # Login to Amazon ECR
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Build Docker image
       - name: Build Docker image
+        working-directory: starter/backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
           docker build \
-            -t ${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
-            ./starter/backend
+            --tag $ECR_REGISTRY/backend:${{ github.sha }} \
+            .
 
-      # Tag Docker image for ECR
-      - name: Tag Docker image
-        run: |
-          docker tag \
-            ${{ env.ECR_REPOSITORY }}:${{ github.sha }} \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-
-      # Push image to ECR
       - name: Push Docker image to ECR
+        working-directory: starter/backend
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          docker push $ECR_REGISTRY/backend:${{ github.sha }}
 
-      # Configure kubectl for EKS
-      - name: Update kubeconfig
+  deploy:
+    name: Deploy Backend
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+
+      - name: Configure kubectl
         run: |
           aws eks update-kubeconfig \
-            --region $AWS_REGION \
-            --name $EKS_CLUSTER_NAME
+            --name cluster \
+            --region us-east-1
 
-      # Update deployment image to the new ECR image
-      - name: Update Kubernetes deployment image
+      - name: Setup Kustomize
+        uses: imranismail/setup-kustomize@v2
+
+      - name: Update Kubernetes image
+        working-directory: starter/backend/k8s
         run: |
-          sed -i "s|IMAGE_PLACEHOLDER|${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}|g" \
-            starter/backend/k8s/deployment.yaml
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ECR_REPO="${ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com/backend"
+          kustomize edit set image backend=${ECR_REPO}:${{ github.sha }}
 
-      # Deploy to Kubernetes
-      - name: Deploy backend to EKS
+      - name: Deploy to Kubernetes
+        working-directory: starter/backend/k8s
         run: |
-          kubectl apply -f starter/backend/k8s/deployment.yaml
-          kubectl apply -f starter/backend/k8s/service.yaml
+          kustomize build | kubectl apply -f -
 
-      # Restart deployment to ensure the new image is used
-      - name: Restart backend deployment
-        run: |
-          kubectl rollout restart deployment/backend
-
-      # Verify deployment succeeded
-      - name: Verify rollout status
+      - name: Verify deployment
         run: |
           kubectl rollout status deployment/backend --timeout=180s
-          kubectl get pods
-          kubectl get svc
